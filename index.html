@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ICU Ventilator Allocation System</title>
+  <meta name="description" content="Real-time ICU Ventilator Allocation Dashboard with BFS/DFS graph algorithms, triage scoring, organ failure cascade, and surge prediction."/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<!-- ═══ HEADER ══════════════════════════════════════════════════════════ -->
+<header class="header">
+  <div class="header-left">
+    <div class="pulse-dot"></div>
+    <div>
+      <h1 class="header-title">ICU Ventilator Allocation System</h1>
+      <span class="header-sub">Graph Intelligence Dashboard — BFS · DFS · Triage AI</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="stat-badge" id="hdr-free-vents">
+      <span class="stat-num" id="free-vent-count">3</span>
+      <span class="stat-lbl">Free Vents</span>
+    </div>
+    <div class="stat-badge danger-badge">
+      <span class="stat-num" id="surge-timer">--</span>
+      <span class="stat-lbl">Min to Zero</span>
+    </div>
+    <div class="clock" id="clock"></div>
+    <button class="btn btn-alarm" id="btn-surge">⚡ Surge Alert</button>
+  </div>
+</header>
+
+<!-- ═══ MAIN LAYOUT ══════════════════════════════════════════════════════ -->
+<main class="main-layout">
+
+  <!-- LEFT — Controls -->
+  <aside class="sidebar">
+    <section class="panel">
+      <h2 class="panel-title">🏥 Actions</h2>
+      <button class="btn btn-primary full-width" id="btn-new-patient">
+        🚨 New Critical Patient
+      </button>
+      <button class="btn btn-warning full-width" id="btn-remove-vent">
+        ⚠ Remove Ventilator
+      </button>
+      <button class="btn btn-success full-width" id="btn-weaning">
+        💚 Find Weaning Candidate
+      </button>
+      <button class="btn btn-info full-width" id="btn-dispatch-staff">
+        👩‍⚕️ Dispatch Staff
+      </button>
+      <button class="btn btn-secondary full-width" id="btn-cycle">
+        🔄 Detect Deadlock
+      </button>
+      <button class="btn btn-ghost full-width" id="btn-reset">
+        ↺ Reset Simulation
+      </button>
+    </section>
+
+    <!-- Legend -->
+    <section class="panel">
+      <h2 class="panel-title">🎨 Legend</h2>
+      <div class="legend-grid">
+        <div class="legend-item"><span class="dot dot-stable"></span> Stable</div>
+        <div class="legend-item"><span class="dot dot-risk"></span> At Risk</div>
+        <div class="legend-item"><span class="dot dot-critical"></span> Critical</div>
+        <div class="legend-item"><span class="dot dot-free"></span> Vent Free</div>
+        <div class="legend-item"><span class="dot dot-bfs"></span> BFS Wave</div>
+        <div class="legend-item"><span class="dot dot-dfs"></span> DFS Trace</div>
+        <div class="legend-item"><span class="dot dot-patient"></span> Patient</div>
+        <div class="legend-item"><span class="dot dot-staff"></span> Staff</div>
+      </div>
+    </section>
+
+    <!-- Arrival rate slider -->
+    <section class="panel">
+      <h2 class="panel-title">📈 Surge Rate</h2>
+      <label class="slider-label">Arrivals/min: <span id="rate-val">0.15</span></label>
+      <input type="range" id="arrival-rate" min="0.05" max="1.0" step="0.05" value="0.15" class="slider"/>
+      <p class="hint-text">Drag to simulate different surge intensities</p>
+    </section>
+  </aside>
+
+  <!-- CENTRE — Canvas -->
+  <section class="canvas-section">
+    <div class="canvas-header">
+      <span class="canvas-title">Hospital Floor Map — Live</span>
+      <div class="zoom-controls">
+        <button id="btn-zoom-in" class="zoom-btn">+</button>
+        <button id="btn-zoom-out" class="zoom-btn">−</button>
+        <button id="btn-zoom-reset" class="zoom-btn">⊙</button>
+      </div>
+    </div>
+    <canvas id="hospital-canvas"></canvas>
+    <div id="tooltip" class="tooltip hidden"></div>
+  </section>
+
+  <!-- RIGHT — Info panels -->
+  <aside class="info-panel">
+
+    <!-- Triage Table -->
+    <section class="panel">
+      <h2 class="panel-title">🔴 Triage Priority</h2>
+      <div class="triage-list" id="triage-list"></div>
+    </section>
+
+    <!-- Event Log -->
+    <section class="panel log-panel">
+      <h2 class="panel-title">📋 Event Log</h2>
+      <div class="log-container" id="event-log"></div>
+    </section>
+
+    <!-- Surge Timeline -->
+    <section class="panel">
+      <h2 class="panel-title">⏱ Surge Timeline</h2>
+      <div class="surge-bar-wrap">
+        <div class="surge-bar-bg">
+          <div class="surge-bar-fill" id="surge-bar"></div>
+        </div>
+        <div class="surge-labels">
+          <span>NOW</span><span id="surge-time-lbl">∞ min</span>
+        </div>
+      </div>
+      <div class="zone-surge" id="zone-surge-list"></div>
+    </section>
+
+    <!-- Cascade Display -->
+    <section class="panel" id="cascade-panel" style="display:none">
+      <h2 class="panel-title">💀 Organ Cascade</h2>
+      <div class="cascade-container" id="cascade-steps"></div>
+    </section>
+
+  </aside>
+</main>
+
+<!-- ═══ MODAL — Deadlock ════════════════════════════════════════════════ -->
+<div id="deadlock-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 class="modal-title">🔄 Deadlock / Cycle Detection</h3>
+    <div id="modal-body"></div>
+    <button class="btn btn-ghost" onclick="document.getElementById('deadlock-modal').classList.add('hidden')">Close</button>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
