@@ -1,253 +1,235 @@
-// ICU Ventilator Allocation System - Main Driver
-// Compile: gcc -Wall -o icu main.c graph.c bfs.c dfs.c priority.c -lm
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+
 #include "graph.h"
+#include "bfs.h"
+#include "dfs.h"
+#include "utility.h"
 
-// Forward declarations from other translation units
-float compute_priority(Node*);
-int   rank_patients(Graph*, int*);
-int   find_weaning_candidate(Graph*);
-int   bfs_nearest_ventilator(Graph*, int, int*, int*);
-int   bfs_nearest_staff(Graph*, int);
-int   bfs_surge_map(Graph*, int, int*, int);
-float bfs_surge_time(Graph*, float);
-void  dfs_organ_cascade(Graph*, int);
-void  dfs_dependency_chain(Graph*, int);
-int   dfs_detect_cycles(Graph*);
-int   dfs_find_weaning_candidates(Graph*, int*, int);
+int main() {
 
-// ─── Build Demo Hospital Graph ────────────────────────────────────────────
-static Graph* build_demo_hospital(void) {
-    Graph* g = graph_create();
+    Graph g;
 
-    // ── Zones ──────────────────────────────────────────────────
-    int z_icu  = graph_add_node(g, "ICU Ward A",      TYPE_ZONE, STATUS_AT_RISK, 2, 2);
-    int z_icu2 = graph_add_node(g, "ICU Ward B",      TYPE_ZONE, STATUS_STABLE,  2, 5);
-    int z_step = graph_add_node(g, "Step-Down Unit",  TYPE_ZONE, STATUS_STABLE,  5, 2);
-    int z_er   = graph_add_node(g, "Emergency Room",  TYPE_ZONE, STATUS_CRITICAL,8, 2);
+    initGraph(&g);
 
-    // ── Ventilators ────────────────────────────────────────────
-    int v0 = graph_add_node(g, "Vent-01", TYPE_VENTILATOR, STATUS_IN_USE, 1, 1);
-    int v1 = graph_add_node(g, "Vent-02", TYPE_VENTILATOR, STATUS_FREE,   2, 1);
-    int v2 = graph_add_node(g, "Vent-03", TYPE_VENTILATOR, STATUS_FREE,   3, 1);
-    int v3 = graph_add_node(g, "Vent-04", TYPE_VENTILATOR, STATUS_IN_USE, 2, 4);
-    int v4 = graph_add_node(g, "Vent-05", TYPE_VENTILATOR, STATUS_FREE,   5, 3);
+    // Default Nodes
 
-    g->nodes[v0].data.ventilator.floor = 2; strcpy(g->nodes[v0].data.ventilator.wing, "A");
-    g->nodes[v1].data.ventilator.floor = 2; strcpy(g->nodes[v1].data.ventilator.wing, "A");
-    g->nodes[v2].data.ventilator.floor = 2; strcpy(g->nodes[v2].data.ventilator.wing, "A");
-    g->nodes[v3].data.ventilator.floor = 2; strcpy(g->nodes[v3].data.ventilator.wing, "B");
-    g->nodes[v4].data.ventilator.floor = 3; strcpy(g->nodes[v4].data.ventilator.wing, "C");
+    Node p1 = {0, PATIENT, 30, 20, 0};
+    Node p2 = {1, PATIENT, 50, 40, 0};
 
-    // ── Patients ────────────────────────────────────────────────
-    int p0 = graph_add_node(g, "Alice Chen",   TYPE_PATIENT, STATUS_CRITICAL, 1, 2);
-    int p1 = graph_add_node(g, "Bob Martinez", TYPE_PATIENT, STATUS_AT_RISK,  2, 3);
-    int p2 = graph_add_node(g, "Carol Singh",  TYPE_PATIENT, STATUS_STABLE,   3, 2);
-    int p3 = graph_add_node(g, "David Wu",     TYPE_PATIENT, STATUS_CRITICAL, 4, 2);
-    int p4 = graph_add_node(g, "Eva Patel",    TYPE_PATIENT, STATUS_AT_RISK,  2, 5);
+    Node v1 = {2, VENTILATOR, 0, 0, 1};
+    Node v2 = {3, VENTILATOR, 0, 0, 1};
 
-    // Configure patient data
-    // Alice — critical, poor lungs & heart
-    g->nodes[p0].data.patient.oxygen_level     = 72.0f;
-    g->nodes[p0].data.patient.lung_stability   = 0.25f;
-    g->nodes[p0].data.patient.heart_stability  = 0.40f;
-    g->nodes[p0].data.patient.kidney_stability = 0.60f;
-    g->nodes[p0].data.patient.brain_stability  = 0.80f;
-    g->nodes[p0].data.patient.ventilator_id    = v0;
-    g->nodes[p0].data.patient.time_on_ventilator = 480; // 8 hours
+    Node z1 = {4, ZONE, 0, 0, 0};
+    Node z2 = {5, ZONE, 0, 0, 0};
 
-    // Bob — at risk
-    g->nodes[p1].data.patient.oxygen_level     = 88.0f;
-    g->nodes[p1].data.patient.lung_stability   = 0.55f;
-    g->nodes[p1].data.patient.heart_stability  = 0.65f;
-    g->nodes[p1].data.patient.kidney_stability = 0.70f;
-    g->nodes[p1].data.patient.brain_stability  = 0.85f;
-    g->nodes[p1].data.patient.ventilator_id    = v3;
-    g->nodes[p1].data.patient.time_on_ventilator = 120;
+    addNode(&g, p1);
+    addNode(&g, p2);
 
-    // Carol — stable, weaning candidate
-    g->nodes[p2].data.patient.oxygen_level     = 96.0f;
-    g->nodes[p2].data.patient.lung_stability   = 0.85f;
-    g->nodes[p2].data.patient.heart_stability  = 0.88f;
-    g->nodes[p2].data.patient.kidney_stability = 0.90f;
-    g->nodes[p2].data.patient.brain_stability  = 0.95f;
-    g->nodes[p2].data.patient.ventilator_id    = -1;
-    g->nodes[p2].data.patient.time_on_ventilator = 60;
+    addNode(&g, v1);
+    addNode(&g, v2);
 
-    // David — critical, no ventilator yet (new arrival)
-    g->nodes[p3].data.patient.oxygen_level     = 68.0f;
-    g->nodes[p3].data.patient.lung_stability   = 0.20f;
-    g->nodes[p3].data.patient.heart_stability  = 0.35f;
-    g->nodes[p3].data.patient.kidney_stability = 0.50f;
-    g->nodes[p3].data.patient.brain_stability  = 0.75f;
-    g->nodes[p3].data.patient.ventilator_id    = -1;
-    g->nodes[p3].data.patient.time_on_ventilator = 0;
+    addNode(&g, z1);
+    addNode(&g, z2);
 
-    // Eva — moderate
-    g->nodes[p4].data.patient.oxygen_level     = 91.0f;
-    g->nodes[p4].data.patient.lung_stability   = 0.70f;
-    g->nodes[p4].data.patient.heart_stability  = 0.72f;
-    g->nodes[p4].data.patient.kidney_stability = 0.68f;
-    g->nodes[p4].data.patient.brain_stability  = 0.88f;
-    g->nodes[p4].data.patient.ventilator_id    = -1;
+    // Default Connections
 
-    // ── Staff ────────────────────────────────────────────────────
-    int s0 = graph_add_node(g, "Nurse Rita",    TYPE_STAFF, STATUS_STABLE, 2, 2);
-    int s1 = graph_add_node(g, "RT James",      TYPE_STAFF, STATUS_STABLE, 3, 3);
-    g->nodes[s0].data.staff.available = 1; strcpy(g->nodes[s0].data.staff.role, "nurse");
-    g->nodes[s1].data.staff.available = 1; strcpy(g->nodes[s1].data.staff.role, "respiratory_therapist");
+    addEdge(&g, 0, 4);
+    addEdge(&g, 4, 5);
+    addEdge(&g, 5, 2);
 
-    // ── Edges (physical connections / proximity) ──────────────────
-    // Zone connectivity
-    graph_add_edge(g, z_icu, z_icu2, 5.0f);
-    graph_add_edge(g, z_icu, z_step, 10.0f);
-    graph_add_edge(g, z_step, z_er,  8.0f);
-    graph_add_edge(g, z_icu2, z_er, 12.0f);
+    addEdge(&g, 1, 4);
+    addEdge(&g, 5, 3);
 
-    // Patients to their zone
-    graph_add_edge(g, p0, z_icu,  1.0f);
-    graph_add_edge(g, p1, z_icu,  1.5f);
-    graph_add_edge(g, p2, z_step, 1.0f);
-    graph_add_edge(g, p3, z_er,   1.0f);
-    graph_add_edge(g, p4, z_icu2, 1.0f);
+    int choice;
 
-    // Ventilators to their zone / patient proximity
-    graph_add_edge(g, v0, p0, 0.5f);
-    graph_add_edge(g, v0, z_icu, 1.0f);
-    graph_add_edge(g, v1, z_icu, 1.0f);
-    graph_add_edge(g, v2, z_icu, 1.5f);
-    graph_add_edge(g, v3, p1, 0.5f);
-    graph_add_edge(g, v3, z_icu2, 1.0f);
-    graph_add_edge(g, v4, z_step, 1.0f);
+    while(1) {
 
-    // Patients adjacent to each other (proximity / shared sedation)
-    graph_add_edge(g, p0, p1, 2.0f);
-    graph_add_edge(g, p1, p2, 3.0f);
-    graph_add_edge(g, p3, p4, 4.0f);
+        printf("\n====================================\n");
+        printf(" ICU Ventilator Allocation System\n");
+        printf("====================================\n");
 
-    // Staff proximity
-    graph_add_edge(g, s0, z_icu,  1.0f);
-    graph_add_edge(g, s1, z_step, 1.0f);
-    graph_add_edge(g, s0, p0,     2.0f);
-    graph_add_edge(g, s1, p2,     2.0f);
+        printf("1. Show ICU Network\n");
+        printf("2. Update ICU Network\n");
+        printf("3. Trigger Emergency Allocation\n");
+        printf("4. Show DFS Traversal\n");
+        printf("5. Exit\n");
 
-    return g;
-}
+        printf("\nEnter Choice : ");
 
-// ─── Divider ─────────────────────────────────────────────────────────────
-static void divider(const char* title) {
-    printf("\n\033[1;36m╔══════════════════════════════════════════════════════════╗\n");
-    printf("║  %-56s║\n", title);
-    printf("╚══════════════════════════════════════════════════════════╝\033[0m\n");
-}
+        scanf("%d", &choice);
 
-int main(void) {
-    printf("\033[1;33m");
-    printf("██╗ ██████╗██╗   ██╗    ██╗   ██╗███████╗███╗   ██╗████████╗\n");
-    printf("╚═╝██╔════╝██║   ██║    ██║   ██║██╔════╝████╗  ██║╚══██╔══╝\n");
-    printf("   ██║     ██║   ██║    ██║   ██║█████╗  ██╔██╗ ██║   ██║   \n");
-    printf("   ██║     ██║   ██║    ╚██╗ ██╔╝██╔══╝  ██║╚██╗██║   ██║   \n");
-    printf("   ╚██████╗╚██████╔╝     ╚████╔╝ ███████╗██║ ╚████║   ██║   \n");
-    printf("    ╚═════╝ ╚═════╝       ╚═══╝  ╚══════╝╚═╝  ╚═══╝   ╚═╝   \n");
-    printf("     ICU VENTILATOR ALLOCATION SYSTEM  — Graph Algorithms\n\033[0m\n");
+        switch(choice) {
 
-    Graph* g = build_demo_hospital();
-    graph_print(g);
+            case 1:
 
-    // ── 1. Triage Priority Scoring ────────────────────────────────
-    divider("1. TRIAGE PRIORITY SCORING");
-    int ranked[MAX_NODES];
-    int cnt = rank_patients(g, ranked);
-    printf("  %-4s %-20s %-10s %-10s\n", "Rank", "Patient", "Score", "Wean?");
-    printf("  ────────────────────────────────────────────\n");
-    for (int i = 0; i < cnt; i++) {
-        Node* n = &g->nodes[ranked[i]];
-        printf("  #%-3d %-20s %-10.1f %s\n",
-               i+1, n->name,
-               n->data.patient.priority_score,
-               n->data.patient.weaning_candidate ? "YES ✓" : "No");
+                showNetwork(&g);
+
+                break;
+
+            case 2: {
+
+                int updateChoice;
+
+                while(1) {
+
+                    printf("\n========== UPDATE ICU NETWORK ==========\n");
+
+                    printf("1. Add Patient\n");
+                    printf("2. Add Ventilator\n");
+                    printf("3. Remove Ventilator\n");
+                    printf("4. Add ICU Zone\n");
+                    printf("5. Connect Nodes\n");
+                    printf("6. Back to Main Menu\n");
+
+                    printf("\nEnter Choice : ");
+
+                    scanf("%d", &updateChoice);
+
+                    if(updateChoice == 1) {
+
+                        Node p;
+
+                        p.type = PATIENT;
+
+                        p.available = 0;
+
+                        printf("\nEnter Patient ID : ");
+
+                        scanf("%d", &p.id);
+
+                        printf("Enter Oxygen Level : ");
+
+                        scanf("%d", &p.oxygen);
+
+                        printf("Enter Stability Score : ");
+
+                        scanf("%d", &p.stability);
+
+                        addNode(&g, p);
+
+                        printf("Patient Added Successfully.\n");
+                    }
+
+                    else if(updateChoice == 2) {
+
+                        Node v;
+
+                        v.type = VENTILATOR;
+
+                        v.oxygen = 0;
+
+                        v.stability = 0;
+
+                        printf("\nEnter Ventilator ID : ");
+
+                        scanf("%d", &v.id);
+
+                        printf("Available? (1/0) : ");
+
+                        scanf("%d", &v.available);
+
+                        addNode(&g, v);
+
+                        printf("Ventilator Added Successfully.\n");
+                    }
+
+                    else if(updateChoice == 3) {
+
+                        int id;
+
+                        printf("\nEnter Ventilator ID : ");
+
+                        scanf("%d", &id);
+
+                        removeVentilator(&g, id);
+                    }
+
+                    else if(updateChoice == 4) {
+
+                        Node z;
+
+                        z.type = ZONE;
+
+                        z.oxygen = 0;
+
+                        z.stability = 0;
+
+                        z.available = 0;
+
+                        printf("\nEnter Zone ID : ");
+
+                        scanf("%d", &z.id);
+
+                        addNode(&g, z);
+
+                        printf("Zone Added Successfully.\n");
+                    }
+
+                    else if(updateChoice == 5) {
+
+                        int u, v;
+
+                        printf("\nEnter First Node Index : ");
+
+                        scanf("%d", &u);
+
+                        printf("Enter Second Node Index : ");
+
+                        scanf("%d", &v);
+
+                        addEdge(&g, u, v);
+
+                        printf("Nodes Connected Successfully.\n");
+                    }
+
+                    else if(updateChoice == 6) {
+
+                        break;
+                    }
+
+                    else {
+
+                        printf("\nInvalid Choice.\n");
+                    }
+                }
+
+                break;
+            }
+
+            case 3: {
+
+                int patient =
+                highestPriorityPatient(&g);
+
+                allocateVentilator(&g, patient);
+
+                break;
+            }
+
+            case 4: {
+
+                int visited[MAX] = {0};
+
+                printf("\nDFS Traversal:\n");
+
+                dfs(&g, 0, visited);
+
+                printf("\n");
+
+                break;
+            }
+
+            case 5:
+
+                printf("\nExiting System...\n");
+
+                return 0;
+
+            default:
+
+                printf("\nInvalid Choice.\n");
+        }
     }
 
-    // ── 2. BFS: Nearest Ventilator for critical patient David ─────
-    divider("2. BFS — NEAREST VENTILATOR (David Wu, new arrival)");
-    int path[MAX_NODES], plen = 0;
-    // David Wu is node index 3 (p3)
-    int david_id = -1;
-    for (int i = 0; i < g->node_count; i++)
-        if (strcmp(g->nodes[i].name, "David Wu") == 0) { david_id = i; break; }
-
-    int vent_id = bfs_nearest_ventilator(g, david_id, path, &plen);
-    if (vent_id >= 0) {
-        printf("  ✓ Found: %s\n", g->nodes[vent_id].name);
-        printf("  BFS path: ");
-        for (int i = 0; i < plen; i++) printf("%s%s", g->nodes[path[i]].name, i<plen-1?" → ":"");
-        printf("\n  %d hops away\n", plen - 1);
-    } else {
-        printf("  ✗ No ventilator reachable — SURGE CRITICAL\n");
-    }
-
-    // ── 3. BFS: Nearest Staff ─────────────────────────────────────
-    divider("3. BFS — NEAREST STAFF for Alice Chen");
-    int alice_id = -1;
-    for (int i = 0; i < g->node_count; i++)
-        if (strcmp(g->nodes[i].name, "Alice Chen") == 0) { alice_id = i; break; }
-    int staff_id = bfs_nearest_staff(g, alice_id);
-    if (staff_id >= 0)
-        printf("  ✓ Dispatching: %s (%s)\n", g->nodes[staff_id].name,
-               g->nodes[staff_id].data.staff.role);
-    else
-        printf("  ✗ No staff available!\n");
-
-    // ── 4. BFS: Surge Prediction ─────────────────────────────────
-    divider("4. BFS — SURGE PREDICTION");
-    float arrival = 0.15f; // patients/minute
-    float mins    = bfs_surge_time(g, arrival);
-    printf("  Current arrival rate: %.2f patients/min\n", arrival);
-    printf("  Estimated time until ventilators depleted: \033[1;31m%.0f minutes\033[0m\n", mins);
-
-    // ── 5. BFS: Zone Surge Map ────────────────────────────────────
-    divider("5. BFS — ZONE SURGE MAP (from ER outwards)");
-    int er_id = -1;
-    for (int i = 0; i < g->node_count; i++)
-        if (strcmp(g->nodes[i].name, "Emergency Room") == 0) { er_id = i; break; }
-    int surge_order[MAX_NODES], slen = bfs_surge_map(g, er_id, surge_order, MAX_NODES);
-    printf("  Zones will fill in this order:\n");
-    for (int i = 0; i < slen; i++) {
-        Node* z = &g->nodes[surge_order[i]];
-        printf("  %d. %s\n", i+1, z->name);
-    }
-
-    // ── 6. DFS: Organ Failure Cascade ────────────────────────────
-    divider("6. DFS — ORGAN FAILURE CASCADE (Alice Chen loses ventilator)");
-    dfs_organ_cascade(g, alice_id);
-
-    // ── 7. DFS: Dependency Chain ──────────────────────────────────
-    divider("7. DFS — VENTILATOR DEPENDENCY CHAIN");
-    dfs_dependency_chain(g, alice_id);
-
-    // ── 8. DFS: Cycle / Deadlock Detection ───────────────────────
-    divider("8. DFS — CYCLE / DEADLOCK DETECTION");
-    dfs_detect_cycles(g);
-
-    // ── 9. Weaning Candidate + Cascade Combo ─────────────────────
-    divider("9. THE CRITICAL COMBO — WEANING CANDIDATE + CASCADE");
-    int wean_ids[MAX_NODES];
-    int wcount = dfs_find_weaning_candidates(g, wean_ids, MAX_NODES);
-    if (wcount > 0) {
-        printf("  \033[1;32mWeaning candidate(s) found:\033[0m\n");
-        for (int i = 0; i < wcount; i++)
-            printf("    → %s (priority score: %.1f)\n",
-                   g->nodes[wean_ids[i]].name,
-                   g->nodes[wean_ids[i]].data.patient.priority_score);
-    } else {
-        printf("  \033[1;31mNo safe weaning candidate — IMPOSSIBLE DECISION\033[0m\n");
-        printf("  Cascade consequence if we don't act:\n");
-        dfs_organ_cascade(g, alice_id);
-    }
-
-    printf("\n\033[1;32m  Open index.html in your browser for the visual dashboard.\033[0m\n\n");
-    graph_destroy(g);
     return 0;
 }
